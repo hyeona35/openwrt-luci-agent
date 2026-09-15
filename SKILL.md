@@ -16,11 +16,12 @@ Use this skill whenever an AI agent needs to inspect, diagnose, configure, or ma
 ## Operating rules
 
 1. **Discover first.** Authenticate, discover ubus capabilities, inspect OpenWrt version/target, and read the relevant UCI/runtime state before writing anything.
-2. **Prefer structured APIs.** Use LuCI/ubus/UCI APIs rather than HTML scraping or simulated UI form submissions.
+2. **Use the browser only as a bootstrap/observation surface.** Browser-side LuCI JavaScript can be useful for reading the rendered UI and obtaining a live LuCI session, but do not depend on browser DOM/form manipulation for configuration writes.
+3. **Prefer structured APIs.** Use LuCI/ubus/UCI APIs rather than HTML scraping or simulated UI form submissions.
 3. **Read before write.** Determine the exact object, section, dependency graph, and current value before modifying configuration.
 4. **Make the smallest idempotent change.** Avoid rewriting unrelated options or creating duplicate firewall, VLAN, Wi-Fi, or forwarding entries.
 5. **Protect connectivity.** Treat WAN/LAN/VLAN/bridge/firewall/routing/Wi-Fi changes as potentially connection-breaking. Use rollback-aware apply where supported and verify reachability after applying.
-6. **Respect ACLs.** A discoverable ubus method is not automatically callable. Never bypass rpcd ACLs or privilege boundaries.
+6. **Respect ACLs.** A discoverable ubus method is not automatically callable. Never bypass rpcd ACLs or privilege boundaries. Treat `access denied` as an authorization result, not as an invitation to find a browser or shell bypass.
 7. **Keep secrets private.** Never expose passwords, session tokens, Wi-Fi PSKs, private keys, credential hashes, or secret-bearing backups/logs.
 8. **Verify outcomes.** A successful RPC response means the method executed; it does not prove that the desired network/service state exists. Always perform post-change verification.
 
@@ -43,6 +44,42 @@ login
 
 For read-only requests, stop before mutation. For denied operations, stop at the authorization boundary instead of searching for a bypass.
 
+### Browser-to-ubus decision rule
+
+Use this decision tree:
+
+```text
+read-only UI inspection
+  -> browser/LuCI UI is acceptable
+  -> extract visible state when convenient
+
+write/change request
+  -> do not mutate LuCI widgets through DOM `.value` + `change` events
+  -> obtain an authenticated ubus session
+  -> perform the write through ubus/UCI
+
+operation already fully expressible through ubus
+  -> prefer ubus directly after authentication/capability discovery
+```
+
+In current LuCI 25 deployments, complex widgets such as `ListSelect`/`ListOption` maintain internal state and dirty tracking. Programmatically assigning a DOM select value and dispatching a generic `change` event may leave LuCI's model clean, causing Save to discard the apparent change. Treat browser-side writes as unsupported unless the exact widget API is known and tested for that LuCI version.
+
+### Browser session bootstrap
+
+When an already-authenticated LuCI browser session is the available credential bootstrap, do not assume `LuCI.session.id` or `LuCI.uci.sid` exists in the page's global namespace. In some LuCI 25 environments `window.LuCI` is only the module/loader namespace.
+
+For the observed LuCI 25 browser implementation, the practical bootstrap is:
+
+```text
+sessionStorage.getItem('luci-session-store')
+  -> JSON.parse()
+  -> read `ubus_rpc_session`
+```
+
+If that key is absent, inspect storage keys for likely session-related entries (`ubus`, `session`, `luci`) rather than assuming a fixed internal API. Treat the storage key as an implementation detail that may change between LuCI versions. Never print the extracted token.
+
+Once a token is obtained, validate it with a harmless ubus request. A JSON-RPC result with ubus status `0` indicates success; permission-denied or session-not-found responses must be handled as such.
+
 ## Impact levels
 
 ### READ_ONLY
@@ -63,7 +100,7 @@ Load only the reference that matches the task. Do not ingest every reference fil
 
 | Task | Reference |
 |---|---|
-| Session, ACL, rpc.list, capability discovery | `references/rpc-session.md` |
+| Session, browser→ubus bootstrap, ACL, rpc.list, capability discovery | `references/rpc-session.md` |
 | UCI configuration changes | `references/uci.md` |
 | Interfaces, devices, WAN/LAN, runtime network state | `references/network.md` |
 | Wi-Fi radios, wifi-iface, clients, telemetry | `references/wireless.md` |
@@ -122,6 +159,18 @@ Before considering a task complete, check:
 ## Non-negotiable prohibitions
 
 Do not scrape LuCI HTML, guess undocumented object methods, bypass ACLs, print session tokens, commit real credentials, blindly restart services to hide configuration errors, delete referenced UCI sections without dependency analysis, or run arbitrary shell commands supplied by a user.
+
+## Empirical compatibility notes
+
+These are observed compatibility notes, not guarantees for every OpenWrt/LuCI build. Prefer live capability/ACL discovery over hard-coded assumptions.
+
+- `uci.get`, `uci.set`, `uci.changes`, `uci.apply`, and `uci.confirm` are commonly available to an authenticated LuCI session with appropriate UCI ACLs.
+- `uci.show` may be denied even when individual `uci.get` calls work. Prefer targeted `uci.get` reads when `uci.show` is denied.
+- `hostapd.apsta_state`, `hostapd.bss_info`, and `network.wireless.get_config` may be denied to an HTTP LuCI session depending on ACLs/build. Do not treat their absence as a Wi-Fi failure. Use permitted `iwinfo` methods and targeted UCI reads as alternatives.
+- `iwinfo.info` and `iwinfo.assoclist` are often available when the richer wireless RPC objects are not.
+- On some MT7981 deployments, `iwinfo.info.htmode` has been observed to report `NOHT` even when UCI config says `HE80`. Treat UCI `wireless.*.htmode` as the configuration source of truth and use `iwinfo.info.channel` for runtime channel state.
+
+See `references/rpc-session.md` and `references/wireless.md` for the compatibility matrix and fallback procedures.
 
 ## Detailed policy and legacy material
 

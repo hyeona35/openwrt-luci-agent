@@ -90,3 +90,33 @@ Before changing SSID, security, channel or band:
 Never expose a Wi-Fi PSK in a response.
 
 ---
+
+## 11.7 `iwinfo.htmode` compatibility warning
+
+Do not treat `iwinfo.info.htmode` as universally authoritative.
+
+On some MT7981 deployments it has been observed to report `NOHT` even while the configured UCI value is `HE80`. For reliable reporting:
+
+```text
+runtime channel/frequency -> iwinfo.info
+configured HT/HE width -> uci get wireless.<radio>.htmode
+```
+
+Report these as separate facts when they disagree:
+
+- **Configured mode:** UCI value (`HE80`, etc.)
+- **Runtime channel:** `iwinfo.info.channel`
+- **Runtime htmode:** `iwinfo.info.htmode`, explicitly marked as driver/platform-reported
+
+Do not “correct” UCI configuration merely because `iwinfo` reports `NOHT`.
+
+## 11.8 ACL fallbacks for wireless telemetry
+
+If `network.wireless.get_config`, `hostapd.bss_info`, or other rich wireless methods return access denied:
+
+1. use targeted `uci.get` calls for configured SSID, encryption, network, channel and htmode;
+2. use permitted `iwinfo.info` for runtime channel/frequency and basic radio telemetry;
+3. use `iwinfo.assoclist` for associated clients when permitted;
+4. state explicitly when a value could not be obtained because of ACLs.
+
+Do not interpret `access denied` as evidence that the radio or hostapd is broken.
